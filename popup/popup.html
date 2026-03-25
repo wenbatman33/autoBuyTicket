@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KKTix 自動搶票</title>
+  <title>Event Form Helper</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="header">
     <span class="logo">🎫</span>
-    <h1>KKTix 自動搶票</h1>
+    <h1>Event Form Helper</h1>
     <label class="toggle-switch" title="啟用/停用">
       <input type="checkbox" id="masterToggle">
       <span class="slider"></span>
@@ -17,7 +17,7 @@
   </div>
 
   <div class="section">
-    <div class="section-title">開賣時間設定</div>
+    <div class="section-title">開始時間設定</div>
     <div class="datetime-row">
       <select id="dtYear" class="dt-select dt-year"></select>
       <span class="dt-sep">/</span>
@@ -30,23 +30,23 @@
       <span class="dt-sep">:</span>
       <select id="dtMinute" class="dt-select dt-min"></select>
     </div>
-    <div id="countdown" class="countdown">尚未設定開賣時間</div>
+    <div id="countdown" class="countdown">尚未設定時間</div>
   </div>
 
   <div class="section">
-    <div class="section-title">票券優先清單 <span class="hint">（由上至下依序嘗試）</span></div>
+    <div class="section-title">項目優先清單 <span class="hint">（由上至下依序嘗試）</span></div>
     <div id="ticketList" class="ticket-list"></div>
     <div class="add-ticket-row">
-      <input type="text" id="newTicketName" placeholder="票名關鍵字（如：普通票）" class="input-field flex-grow">
-      <input type="number" id="newTicketQty" placeholder="張數" min="1" max="10" value="1" class="input-qty">
+      <input type="text" id="newTicketName" placeholder="項目關鍵字" class="input-field flex-grow">
+      <input type="number" id="newTicketQty" placeholder="數量" min="1" max="10" value="1" class="input-qty">
       <button id="addTicketBtn" class="btn btn-add">新增</button>
     </div>
   </div>
 
   <div class="section">
-    <div class="section-title">輪詢設定</div>
+    <div class="section-title">頻率設定</div>
     <div class="row">
-      <label class="label">輪詢間隔（ms）</label>
+      <label class="label">檢查間隔（ms）</label>
       <div class="range-wrap">
         <input type="range" id="pollInterval" min="500" max="5000" step="100" value="1500">
         <span id="pollIntervalDisplay" class="range-display">1500ms</span>
@@ -55,18 +55,18 @@
   </div>
 
   <div class="section">
-    <div class="section-title">自動化選項</div>
+    <div class="section-title">表單選項</div>
     <label class="checkbox-row">
       <input type="checkbox" id="autoAgree" checked>
-      <span>自動勾選「同意服務條款」</span>
+      <span>勾選「同意服務條款」</span>
     </label>
     <label class="checkbox-row">
       <input type="checkbox" id="autoNext" checked>
-      <span>自動點擊「選位／下一步」</span>
+      <span>點擊「選位／下一步」</span>
     </label>
     <label class="checkbox-row">
       <input type="checkbox" id="autoApiSubmit">
-      <span>使用 queue API 直接送出（更快）</span>
+      <span>直接送出（較快）</span>
     </label>
   </div>
 

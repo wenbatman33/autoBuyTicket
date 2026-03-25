@@ -1,16 +1,14 @@
 'use strict';
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// KKTix 自動搶票 — Content Script
-// ═══════════════════════════════════════════════════════════════════════════════
+// Content Script
 
 const STATE = {
   IDLE: 'idle',
-  WAITING: 'waiting',        // 開賣前倒數
-  POLLING: 'polling',        // fetch 輪詢中（無票）
-  FILLING: 'filling',        // 填表中
-  QUEUING: 'queuing',        // 已進入 KKTix queue，等待 to_param（禁止任何重複送出）
-  DONE: 'done',              // 搶到票，停止
+  WAITING: 'waiting',
+  POLLING: 'polling',
+  FILLING: 'filling',
+  QUEUING: 'queuing',
+  DONE: 'done',
   STOPPED: 'stopped',
 };
 
@@ -22,7 +20,6 @@ let pollCount = 0;
 let overlay = null;
 let observer = null;
 
-// ─── Entry ────────────────────────────────────────────────────────────────────
 (async function init() {
   settings = await loadSettings();
   injectOverlay();
@@ -30,9 +27,6 @@ let observer = null;
     updateOverlay(STATE.IDLE, '插件已停用');
     return;
   }
-
-  // 選座頁面（/registrations/{to_param}，非 /registrations/new）
-  // 頁面跳轉後 content script 重新載入，直接進入自動選位流程
   if (isSeatingPage()) {
     handleSeatingPage();
     return;
@@ -52,7 +46,6 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
-// ─── Settings ─────────────────────────────────────────────────────────────────
 async function loadSettings() {
   return new Promise((resolve) => {
     chrome.storage.local.get(null, (data) => {
@@ -70,9 +63,7 @@ async function loadSettings() {
   });
 }
 
-// ─── Seating Page（/registrations/{to_param}）────────────────────────────────
 function isSeatingPage() {
-  // 符合 /registrations/{id} 且 id 不是 "new"
   return /\/registrations\/(?!new$)[^/]+/.test(location.pathname);
 }
 
@@ -84,22 +75,16 @@ async function handleSeatingPage() {
   const computerKeywords = ['電腦配位', '電腦選位'];
   const confirmKeywords = ['完成選位', '確認座位'];
   const dismissKeywords = ['知道了'];
-
-  // 最多等 10 秒（每 300ms 掃一次）
   for (let i = 0; i < 34; i++) {
     await randomDelay(300, 300);
 
     const btns = Array.from(document.querySelectorAll(
       'button, input[type="submit"], a.btn, a[class*="btn"], [role="button"], a[ng-click]'
     ));
-
-    // 每秒印一次目前找到的所有按鈕文字，幫助除錯
     if (i % 3 === 0) {
       const btnTexts = btns.map(b => b.textContent.trim()).filter(t => t).join(' | ');
       log(`選座頁掃描 #${i+1}，${btns.length} 個按鈕：${btnTexts.slice(0, 300)}`);
     }
-
-    // 1. 優先：電腦配位
     for (const kw of computerKeywords) {
       for (const btn of btns) {
         if (btn.textContent.trim().includes(kw) && !btn.disabled) {
@@ -112,8 +97,6 @@ async function handleSeatingPage() {
         }
       }
     }
-
-    // 2. 關閉「知道了」提示 modal（每次掃描都嘗試，以防動態出現）
     for (const btn of btns) {
       const t = btn.textContent.trim();
       if (dismissKeywords.some(kw => t === kw || t.startsWith(kw)) && !btn.disabled) {
@@ -122,8 +105,6 @@ async function handleSeatingPage() {
         break;
       }
     }
-
-    // 3. 找不到電腦配位時，若有「完成選位」/「確認座位」則嘗試點擊（等前 3 秒後才嘗試）
     if (i >= 10) {
       for (const kw of confirmKeywords) {
         for (const btn of btns) {
@@ -144,29 +125,22 @@ async function handleSeatingPage() {
   log('未找到可自動點擊的選座按鈕，請手動操作');
 }
 
-// ─── Main Flow ────────────────────────────────────────────────────────────────
 function startAutomation() {
   if (state === STATE.DONE) return;
   const saleTime = settings.saleStartTime ? new Date(settings.saleStartTime).getTime() : null;
   const now = Date.now();
 
   if (saleTime && now < saleTime - 500) {
-    // 開賣前：進入等待模式
     setState(STATE.WAITING);
     scheduleWaitLoop(saleTime);
   } else {
-    // 已開賣或無設定時間：直接開始輪詢
     beginPolling();
   }
 }
-
-// ─── Wait Loop（開賣前）───────────────────────────────────────────────────────
 function scheduleWaitLoop(saleTime) {
   clearTimer();
   const remaining = saleTime - Date.now();
   updateOverlay(STATE.WAITING, formatCountdown(remaining));
-
-  // 開賣前 2 秒：重整頁面，讓 content script 以最新 DOM 重新啟動
   if (remaining <= 2000 && remaining > 0) {
     updateOverlay(STATE.WAITING, '即將重整頁面…');
     log(`開賣前 ${Math.round(remaining)}ms，重整頁面`);
@@ -178,13 +152,9 @@ function scheduleWaitLoop(saleTime) {
     beginPolling();
     return;
   }
-
-  // 距開賣 > 2s：每秒更新倒數，不發請求
   const tickInterval = remaining > 5000 ? 1000 : 200;
   pollTimer = setTimeout(() => scheduleWaitLoop(saleTime), tickInterval);
 }
-
-// ─── Polling Loop（優先掃描真實 DOM，再 fetch 確認）─────────────────────────
 function beginPolling() {
   setState(STATE.POLLING);
   backoffMs = 0;
@@ -198,21 +168,16 @@ async function pollCycle() {
   updateOverlay(STATE.POLLING, `第 ${pollCount} 次探測…`);
 
   try {
-    // ★ 第一優先：掃描當前真實 DOM
-    // KKTix 票種由 JavaScript 動態渲染，fetch 回來的靜態 HTML 不含票種節點
     if (hasTicketsAvailable(document)) {
       setState(STATE.FILLING);
       updateOverlay(STATE.FILLING, '偵測到票券，立即填表…');
       await tryFillCurrentPage();
       return;
     }
-
-    // 第二：靜默 fetch 確認伺服器狀態（判斷是否真的無票或被 redirect）
     const html = await fetchPage();
     const doc = parseHTML(html);
 
     if (hasTicketsAvailable(doc)) {
-      // 伺服器回傳有票，但真實 DOM 尚未更新 → 用 MutationObserver 等待
       setState(STATE.FILLING);
       updateOverlay(STATE.FILLING, '伺服器有票，等待頁面更新…');
       observeAndFill();
@@ -221,7 +186,6 @@ async function pollCycle() {
     }
   } catch (err) {
     if (err.status === 429 || err.status === 503) {
-      // 被限速：指數退避
       backoffMs = Math.min(backoffMs ? backoffMs * 2 : 2000, 30000);
       updateOverlay(STATE.POLLING, `被限速，等待 ${backoffMs / 1000}s…`);
       pollTimer = setTimeout(pollCycle, backoffMs);
@@ -233,14 +197,12 @@ async function pollCycle() {
 
 function scheduleNextPoll() {
   if (state !== STATE.POLLING) return;
-  // 隨機延遲，避免固定間隔被偵測
   const base = settings.pollInterval || 1500;
   const jitter = Math.floor(Math.random() * 600) - 300; // ±300ms
   const delay = Math.max(300, base + jitter);
   pollTimer = setTimeout(pollCycle, delay);
 }
 
-// ─── Fetch page silently ──────────────────────────────────────────────────────
 async function fetchPage() {
   const resp = await fetch(location.href, {
     method: 'GET',
@@ -263,7 +225,6 @@ function parseHTML(html) {
   return parser.parseFromString(html, 'text/html');
 }
 
-// ─── Ticket Availability Check ────────────────────────────────────────────────
 const NO_TICKET_TEXTS = [
   '目前沒有任何可以購買的票卷',
   '目前沒有任何可以購買的票券',
@@ -272,19 +233,12 @@ const NO_TICKET_TEXTS = [
 ];
 
 function hasTicketsAvailable(doc) {
-  // 1. 優先找可用的 + 按鈕 → 有就直接 true，不受頁面其他售完文字干擾
   const plusBtns = findAvailablePlusButtons(doc);
   if (plusBtns.length > 0) { log(`hasTickets: 找到 ${plusBtns.length} 個 + 按鈕`); return true; }
-
-  // 2. 找到「電腦配位」/「下一步」按鈕且未 disabled → true
   const proceedBtn = findProceedButton(doc);
   if (proceedBtn && !proceedBtn.disabled) { log('hasTickets: 找到下一步按鈕'); return true; }
-
-  // 3. fallback：傳統 select/input 票種
   const quantities = doc.querySelectorAll('select[name*="quantity"], input[name*="quantity"]');
   if (quantities.length > 0) { log(`hasTickets: 找到 ${quantities.length} 個數量欄位`); return true; }
-
-  // 4. 最後才看全頁無票文字（部分票已售完不等於全部無票，但走到這裡已確認無按鈕可選）
   const bodyText = (doc.body || doc).textContent;
   const matched = NO_TICKET_TEXTS.find(t => bodyText.includes(t));
   if (matched) { log(`hasTickets: 全頁無票文字「${matched}」`); return false; }
@@ -292,15 +246,11 @@ function hasTicketsAvailable(doc) {
   log('hasTickets: 無票（plusBtns=0, proceedBtn=null, quantities=0, 無售完文字）');
   return false;
 }
-
-// 找所有「可點擊的 + 按鈕」
-// KKTix 使用 class="btn-default plus"（Font Awesome icon，textContent 為空）
 function findAvailablePlusButtons(doc) {
   return Array.from(doc.querySelectorAll('button.plus:not([disabled])'));
 }
 
 function findTicketRows(doc) {
-  // 回傳所有可操作的票種行（含 + 按鈕的 row）
   const plusBtns = findAvailablePlusButtons(doc);
   const rows = new Set();
   for (const btn of plusBtns) {
@@ -308,8 +258,6 @@ function findTicketRows(doc) {
     if (row) rows.add(row);
   }
   if (rows.size > 0) return Array.from(rows);
-
-  // fallback：傳統選擇器
   const selectors = [
     '[data-ticket-type-id]',
     '[class*="ticket-type"]',
@@ -323,11 +271,8 @@ function findTicketRows(doc) {
   }
   return [];
 }
-
-// 找「送出/下一步」類的按鈕
 function findProceedButton(doc) {
   const keywords = ['電腦配位', '電腦選位', '自行選位', '選位', '下一步', '繼續', 'Next'];
-  // KKTix 的進場按鈕可能是 <a> 連結（非 <button>），需要廣泛查詢
   const btns = doc.querySelectorAll(
     'button, input[type="submit"], a.btn, a[class*="btn"], [role="button"], a[href*="seating"], a[ng-click]'
   );
@@ -344,50 +289,34 @@ function findProceedButton(doc) {
   return null;
 }
 
-// ─── Form Filling ─────────────────────────────────────────────────────────────
 async function fillForm(doc) {
-  // 先等 DOM 確認有票種出現（若 doc 是 fetchPage 解析結果，需重新整理真實頁面）
   const isCurrentPage = (doc === document);
 
   if (!isCurrentPage) {
-    // fetch 到有票的 HTML，但我們需要在真實頁面操作 DOM
-    // 先透過 MutationObserver 等待真實頁面更新，或直接觸發一次真實頁面掃描
     observeAndFill();
     return;
   }
-
-  // 在真實頁面上填表
   await tryFillCurrentPage();
 }
 
 async function tryFillCurrentPage() {
-  // Step 1: 優先勾選同意條款（需在選票前完成，否則部分活動按鈕無法啟用）
   if (settings.autoAgree) {
     checkAgreementCheckbox(document);
   }
-
-  // Step 2: 依優先清單選票
   const selected = selectTicketsByPriority(document);
 
   if (!selected) {
-    // 頁面上還沒有票，繼續輪詢
     setState(STATE.POLLING);
     scheduleNextPoll();
     return;
   }
-
-  // Step 3: 等 Angular digest 處理完數量變更
   await randomDelay(150, 300);
 
   log(`設定狀態 autoApiSubmit=${settings.autoApiSubmit} autoNext=${settings.autoNext}`);
-
-  // Step 4: 優先用 queue API 直接送出（比 DOM 點擊快）
   if (settings.autoApiSubmit) {
     const submitted = await tryApiSubmit(document);
     if (submitted) return;
   }
-
-  // Fallback: DOM 點擊「電腦配位」/「自行選位」
   if (settings.autoNext) {
     clickProceedButton(document);
   } else {
@@ -395,11 +324,10 @@ async function tryFillCurrentPage() {
   }
 }
 
-// ─── Ticket Selection ─────────────────────────────────────────────────────────
 function selectTicketsByPriority(doc) {
   if (!settings.tickets || settings.tickets.length === 0) {
-    log('selectTickets: 未設定票券清單，停止自動選票');
-    stop('未設定票券清單，請先在面板新增票名');
+    log('selectTickets: 未設定項目清單');
+    stop('未設定項目清單，請先新增項目');
     return false;
   }
 
@@ -411,7 +339,7 @@ function selectTicketsByPriority(doc) {
     }
     log(`找不到「${name}」，嘗試下一個`);
   }
-  log('selectTickets: 清單全部未命中，繼續輪詢');
+  log('no match, retry');
   return false;
 }
 
@@ -429,9 +357,7 @@ function selectFirstAvailableTicket(doc) {
 }
 
 function trySelectTicket(doc, nameKeyword, qty) {
-  // KKTix DOM: .ticket-unit > .ticket-name (AngularJS ng-repeat)
-  // 注意：nameKeyword 可能在座位描述子元素內，不一定在 .ticket-name
-  // 因此比對整個 .ticket-unit 的 textContent
+  
   const units = doc.querySelectorAll('.ticket-unit');
   log(`trySelectTicket: .ticket-unit 找到 ${units.length} 個，搜尋「${nameKeyword}」`);
   for (const unit of units) {
@@ -447,22 +373,18 @@ function trySelectTicket(doc, nameKeyword, qty) {
     log(`已選票：${nameKeyword} x${qty}`);
     return true;
   }
-
-  // Fallback：用 TreeWalker 找文字，先定位「行容器」再在容器內找 button.plus
-  // 必須先找到行容器才查詢按鈕，避免跨行選到別的票種
   const ROW_SELECTORS = 'li, tr, [class*="ticket-unit"], [class*="ticket_type"], [class*="ticket-row"]';
   const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, null);
   let node;
   while ((node = walker.nextNode())) {
     if (!node.textContent.includes(nameKeyword)) continue;
-    // 往上找行容器（最多 8 層）
     let el = node.parentElement;
     let rowContainer = null;
     for (let d = 0; d < 8 && el && el !== doc.body; d++) {
       if (el.matches(ROW_SELECTORS)) { rowContainer = el; break; }
       el = el.parentElement;
     }
-    if (!rowContainer) continue;  // 找不到行容器，不亂選
+    if (!rowContainer) continue;
     const plusBtn = rowContainer.querySelector('button.plus:not([disabled])');
     if (plusBtn) {
       angularAddQuantity(plusBtn, rowContainer, qty);
@@ -474,11 +396,6 @@ function trySelectTicket(doc, nameKeyword, qty) {
 
   return false;
 }
-
-// 透過 Angular scope 的 quantityBtnClick(ticketType, direction) 增加張數
-// 直接點擊 button.plus 增加張數
-// content script isolated world 看不到頁面的 window.angular，
-// 但 btn.click() 會觸發頁面 DOM 事件，Angular ng-click handler 正常接收
 function angularAddQuantity(plusBtn, unit, qty) {
   const container = unit || plusBtn?.parentElement;
   log(`選票 click x${qty}，container: ${container?.className}`);
@@ -508,19 +425,14 @@ function setInputValue(input, value) {
   } else {
     input.value = String(value);
   }
-
-  // 觸發 React/Vue/Angular 的 change 偵測
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-// ─── Agreement Checkbox ───────────────────────────────────────────────────────
 function checkAgreementCheckbox(doc) {
-  // KKTix 固定 id: person_agree_terms, ng-model: conditions.agreeTerm
   const cb = doc.getElementById('person_agree_terms');
   if (cb && !cb.checked) {
     cb.click();
-    // 同步更新 Angular model（以防 click 不觸發 ng-model 更新）
     try {
       const scope = window.angular && angular.element(cb).scope();
       if (scope) {
@@ -532,8 +444,6 @@ function checkAgreementCheckbox(doc) {
     log('已勾選同意條款 (#person_agree_terms)');
     return;
   }
-
-  // Fallback：關鍵字搜尋
   const keywords = ['服務條款', '隱私權政策', '使用條款'];
   const checkboxes = doc.querySelectorAll('input[type="checkbox"]');
   for (const checkbox of checkboxes) {
@@ -550,7 +460,6 @@ function checkAgreementCheckbox(doc) {
   }
 }
 
-// ─── Proceed Button ───────────────────────────────────────────────────────────
 function clickProceedButton(doc) {
   const btn = findProceedButton(doc);
   if (btn) {
@@ -573,13 +482,10 @@ function clickProceedButton(doc) {
   }
 }
 
-// ─── API Direct Submit（queue.kktix.com）─────────────────────────────────────
-// 實際 API: POST https://queue.kktix.com/queue/{slug}?authenticity_token=...
 // Body: {"tickets":[{"id":ticketTypeId,"quantity":N,"invitationCodes":[],"use_qualification_id":null}],
 //        "currency":"TWD","recaptcha":{},"agreeTerm":true}
 async function tryApiSubmit(doc) {
   try {
-    // 1. 從 Angular scope 取出已選票種（quantity > 0）
     const selectedTickets = getSelectedTicketsFromScope();
     if (!selectedTickets.length) {
       log('API 送出：Angular scope 無已選票種，跳過');
@@ -616,7 +522,7 @@ async function tryApiSubmit(doc) {
       credentials: 'include',
       headers: {
         'accept': 'application/json, text/plain, */*',
-        'content-type': 'text/plain',   // KKTix 用 text/plain 傳 JSON
+        'content-type': 'text/plain',
         'origin': 'https://kktix.com',
         'referer': 'https://kktix.com/',
       },
@@ -626,14 +532,12 @@ async function tryApiSubmit(doc) {
     const text = await resp.text();
     log(`API 回應 status=${resp.status} redirected=${resp.redirected} url=${resp.url}`);
     log(`API 回應 body: ${text.slice(0, 500)}`);
-
-    // 處理 redirect
     if (resp.redirected) {
       log(`跟隨 redirect → ${resp.url}`);
       location.href = resp.url;
-      updateOverlay(STATE.DONE, '✅ 搶票成功！請完成付款');
+      updateOverlay(STATE.DONE, '✅ 完成！請完成付款');
       setState(STATE.DONE);
-      chrome.runtime.sendMessage({ type: 'SET_STATE', state: 'done', detail: '已搶到票，請完成付款流程。' }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'SET_STATE', state: 'done', detail: '已完成，請繼續後續步驟。' }).catch(() => {});
       return true;
     }
 
@@ -642,24 +546,20 @@ async function tryApiSubmit(doc) {
       try { json = JSON.parse(text); } catch (_) {}
 
       if (json) log(`API 回應 JSON keys: ${Object.keys(json).join(', ')}`);
-
-      // 直接 redirect URL
       const redirectUrl = json?.redirect_url || json?.redirectUrl || json?.url ||
                           json?.redirect || json?.location || json?.next_url;
       if (redirectUrl) {
         log(`轉跳 → ${redirectUrl}`);
         location.href = redirectUrl;
-        updateOverlay(STATE.DONE, '✅ 搶票成功！請完成付款');
+        updateOverlay(STATE.DONE, '✅ 完成！請完成付款');
         setState(STATE.DONE);
-        chrome.runtime.sendMessage({ type: 'SET_STATE', state: 'done', detail: '已搶到票，請完成付款流程。' }).catch(() => {});
+        chrome.runtime.sendMessage({ type: 'SET_STATE', state: 'done', detail: '已完成，請繼續後續步驟。' }).catch(() => {});
         return true;
       }
-
-      // KKTix queue 回傳 JWT token → 需要輪詢佇列狀態
       const queueToken = json?.token;
       if (queueToken) {
         log(`收到 queue token，進入 QUEUING 狀態`);
-        setState(STATE.QUEUING);        // 鎖住，防止重複送出
+        setState(STATE.QUEUING);
         if (observer) { observer.disconnect(); observer = null; }
         clearTimer();
         updateOverlay(STATE.QUEUING, '已進入佇列，等待處理…');
@@ -682,13 +582,8 @@ async function tryApiSubmit(doc) {
     return false;
   }
 }
-
-// 從 DOM 取出所有已選票種（quantity > 0）
-// 不依賴 window.angular（content script isolated world 看不到頁面的 angular 全域變數）
 //
-// 已知 KKTix DOM 結構：
 //   <div class="ticket-unit ng-scope" ng-class="{active: ticketModel.quantity != 0}">
-//     <div class="display-table" id="ticket_1015723">   ← ticket id 在這裡
 //       ...
 //     </div>
 //   </div>
@@ -697,14 +592,11 @@ function getSelectedTicketsFromScope() {
   const units = document.querySelectorAll('.ticket-unit');
 
   for (const unit of units) {
-    // 1. ticket id：從 <div id="ticket_XXXXX"> 直接取
     const ticketEl = unit.querySelector('[id^="ticket_"]');
     if (!ticketEl) continue;
     const idMatch = ticketEl.id.match(/^ticket_(\d+)$/);
     if (!idMatch) continue;
     const id = parseInt(idMatch[1]);
-
-    // 2. quantity：優先找 input/span；若無則用 .active class 判斷（qty=1）
     let qty = 0;
     const qtyEl = unit.querySelector(
       'input[type="number"][ng-model], input[type="number"], ' +
@@ -714,7 +606,6 @@ function getSelectedTicketsFromScope() {
     if (qtyEl) {
       qty = parseInt(qtyEl.value !== undefined ? qtyEl.value : qtyEl.textContent) || 0;
     }
-    // .active class 由 ng-class="{active: ticketModel.quantity != 0}" 控制
     if (qty <= 0 && unit.classList.contains('active')) qty = 1;
 
     if (qty > 0) {
@@ -726,15 +617,11 @@ function getSelectedTicketsFromScope() {
   if (!result.length) log('getSelectedTickets: 找不到已選票種');
   return result;
 }
-
-// ─── MutationObserver（等待頁面更新） ─────────────────────────────────────────
 function observeAndFill() {
   if (observer) observer.disconnect();
 
   observer = new MutationObserver(async () => {
-    if (state !== STATE.POLLING && state !== STATE.FILLING) return;  // QUEUING/DONE/STOPPED 全部略過
-
-    // 檢查當前頁面是否有票
+    if (state !== STATE.POLLING && state !== STATE.FILLING) return;
     const noTicket = NO_TICKET_TEXTS.some(t => document.body.textContent.includes(t));
     if (noTicket) return;
 
@@ -748,18 +635,15 @@ function observeAndFill() {
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
-
-  // 同時也直接嘗試一次
   tryFillCurrentPage();
 }
 
-// ─── Overlay UI ───────────────────────────────────────────────────────────────
 function injectOverlay() {
-  if (document.getElementById('kktix-bot-overlay')) return;
+  if (document.getElementById('evt-helper-overlay')) return;
 
   const style = document.createElement('style');
   style.textContent = `
-    #kktix-bot-overlay {
+    #evt-helper-overlay {
       position: fixed;
       top: 18px;
       left: 18px;
@@ -775,8 +659,8 @@ function injectOverlay() {
       overflow: hidden;
       user-select: none;
     }
-    #kktix-bot-overlay * { box-sizing: border-box; }
-    #kktix-bot-header {
+    #evt-helper-overlay * { box-sizing: border-box; }
+    #evt-helper-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -787,8 +671,8 @@ function injectOverlay() {
       font-size: 13px;
       gap: 6px;
     }
-    #kktix-bot-header:active { cursor: grabbing; }
-    #kktix-bot-minimize {
+    #evt-helper-header:active { cursor: grabbing; }
+    #evt-helper-minimize {
       background: rgba(233,69,96,0.2);
       border: none;
       color: #e94560;
@@ -799,20 +683,20 @@ function injectOverlay() {
       display: flex; align-items: center; justify-content: center;
       line-height: 1; flex-shrink: 0;
     }
-    #kktix-bot-minimize:hover { background: #e94560; color: white; }
-    #kktix-bot-body { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
-    #kktix-bot-overlay.minimized #kktix-bot-body { display: none; }
+    #evt-helper-minimize:hover { background: #e94560; color: white; }
+    #evt-helper-body { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+    #evt-helper-overlay.minimized #evt-helper-body { display: none; }
 
     /* Status bar */
-    #kktix-bot-statusbar {
+    #evt-helper-statusbar {
       background: rgba(233,69,96,0.08);
       border: 1px solid rgba(233,69,96,0.25);
       border-radius: 6px;
       padding: 6px 8px;
       display: flex; flex-direction: column; gap: 3px;
     }
-    #kktix-bot-status { color: #ccc; line-height: 1.4; word-break: break-all; font-size: 11px; }
-    #kktix-bot-countdown {
+    #evt-helper-status { color: #ccc; line-height: 1.4; word-break: break-all; font-size: 11px; }
+    #evt-helper-countdown {
       font-size: 17px; font-weight: 700; color: #e94560;
       text-align: center; font-variant-numeric: tabular-nums; min-height: 20px;
     }
@@ -910,18 +794,18 @@ function injectOverlay() {
   document.documentElement.appendChild(style);
 
   overlay = document.createElement('div');
-  overlay.id = 'kktix-bot-overlay';
+  overlay.id = 'evt-helper-overlay';
   overlay.innerHTML = `
-    <div id="kktix-bot-header">
-      <span>🎫 KKTix 搶票</span>
-      <button id="kktix-bot-minimize" title="收合">－</button>
+    <div id="evt-helper-header">
+      <span>🎫 助手</span>
+      <button id="evt-helper-minimize" title="收合">－</button>
     </div>
-    <div id="kktix-bot-body">
+    <div id="evt-helper-body">
 
       <!-- 狀態列 -->
-      <div id="kktix-bot-statusbar">
-        <div id="kktix-bot-status">初始化…</div>
-        <div id="kktix-bot-countdown"></div>
+      <div id="evt-helper-statusbar">
+        <div id="evt-helper-status">初始化…</div>
+        <div id="evt-helper-countdown"></div>
       </div>
 
       <hr class="kb-divider">
@@ -945,12 +829,12 @@ function injectOverlay() {
 
       <hr class="kb-divider">
 
-      <!-- 票券優先清單 -->
+      <!-- 項目優先清單 -->
       <div class="kb-section">
-        <div class="kb-label">票券優先清單</div>
+        <div class="kb-label">項目優先清單</div>
         <div id="kb-ticket-list"></div>
         <div class="kb-add-row">
-          <input type="text" id="kb-ticket-name" class="kb-input" placeholder="票名關鍵字">
+          <input type="text" id="kb-ticket-name" class="kb-input" placeholder="項目關鍵字">
           <input type="number" id="kb-ticket-qty" class="kb-input kb-input-qty" value="1" min="1" max="10">
           <button id="kb-ticket-add" class="kb-btn-add">＋</button>
         </div>
@@ -958,9 +842,9 @@ function injectOverlay() {
 
       <hr class="kb-divider">
 
-      <!-- 輪詢間隔 -->
+      <!-- 檢查間隔 -->
       <div class="kb-section">
-        <div class="kb-label">輪詢間隔</div>
+        <div class="kb-label">檢查間隔</div>
         <div class="kb-range-row">
           <input type="range" id="kb-poll" class="kb-range" min="500" max="5000" step="100" value="1500">
           <span id="kb-poll-val" class="kb-range-val">1500ms</span>
@@ -969,49 +853,39 @@ function injectOverlay() {
 
       <hr class="kb-divider">
 
-      <!-- 自動化選項 -->
+      
       <div class="kb-section">
         <label class="kb-check-row">
           <input type="checkbox" id="kb-agree">
-          <span>自動勾選同意條款</span>
+          <span>勾選同意條款</span>
         </label>
         <label class="kb-check-row">
           <input type="checkbox" id="kb-next">
-          <span>自動點擊下一步</span>
+          <span>點擊下一步</span>
         </label>
         <label class="kb-check-row">
           <input type="checkbox" id="kb-api">
-          <span>使用 Queue API 直接送出</span>
+          <span>直接送出</span>
         </label>
       </div>
 
       <hr class="kb-divider">
 
-      <!-- 啟用搶票（主開關，放最下方） -->
+      
       <label id="kb-enabled-wrap">
         <input type="checkbox" id="kb-enabled">
-        <span id="kb-enabled-label">啟動搶票</span>
+        <span id="kb-enabled-label">啟動</span>
       </label>
 
     </div>
   `;
   document.documentElement.appendChild(overlay);
-
-  // 填入設定值 & 綁定事件
   panelPopulate();
   panelBindEvents();
-
-  // 拖曳移動
-  makeDraggable(overlay, document.getElementById('kktix-bot-header'));
-
-  // 倒數計時
+  makeDraggable(overlay, document.getElementById('evt-helper-header'));
   setInterval(updateOverlayCountdown, 1000);
-
-  // 阻擋大圖載入
   startImageBlocker();
 }
-
-// ─── Panel：填入目前設定值 ─────────────────────────────────────────────────────
 function panelPopulate() {
   const now = new Date();
   const cy = now.getFullYear();
@@ -1034,7 +908,6 @@ function panelPopulate() {
       document.getElementById('kb-minute').value = pad(d.getMinutes());
     }
   } else {
-    // 預設日期為今天，時分留空讓使用者手動填入
     document.getElementById('kb-year').value  = String(now.getFullYear());
     document.getElementById('kb-month').value = pad(now.getMonth() + 1);
     panelFillDays();
@@ -1089,7 +962,7 @@ function panelRenderTickets() {
   if (!list) return;
   list.innerHTML = '';
   if (!settings.tickets?.length) {
-    list.innerHTML = '<div style="color:#555;font-size:10px;text-align:center;padding:4px;">尚未新增票券</div>';
+    list.innerHTML = '<div style="color:#555;font-size:10px;text-align:center;padding:4px;">尚未新增項目</div>';
     return;
   }
   settings.tickets.forEach((t, i) => {
@@ -1108,10 +981,8 @@ function panelRenderTickets() {
     list.appendChild(item);
   });
 }
-
-// ─── Panel：事件綁定 ───────────────────────────────────────────────────────────
 function panelBindEvents() {
-  document.getElementById('kktix-bot-minimize').addEventListener('click', (e) => {
+  document.getElementById('evt-helper-minimize').addEventListener('click', (e) => {
     e.stopPropagation();
     const minimized = overlay.classList.toggle('minimized');
     e.currentTarget.textContent = minimized ? '＋' : '－';
@@ -1175,14 +1046,10 @@ async function panelSave() {
   settings.autoApiSubmit  = document.getElementById('kb-api').checked;
 
   await chrome.storage.local.set(settings);
-
-  // 若啟用了就重新啟動
   if (settings.enabled && (state === STATE.IDLE || state === STATE.STOPPED)) {
     startAutomation();
   }
 }
-
-// ─── 拖曳移動 ─────────────────────────────────────────────────────────────────
 function makeDraggable(el, handle) {
   let ox = 0, oy = 0, sx = 0, sy = 0;
   handle.addEventListener('mousedown', (e) => {
@@ -1202,20 +1069,16 @@ function makeDraggable(el, handle) {
     document.addEventListener('mouseup', onUp);
   });
 }
-
-// ─── Image Blocker（> 200px 圖片不載入）──────────────────────────────────────
 const BLANK_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 function blockLargeImg(img) {
   if (!img.src || img.src.startsWith('data:')) return;
-  // 有明確寬高屬性時，在載入前就攔截
   const w = parseInt(img.getAttribute('width') || 0);
   const h = parseInt(img.getAttribute('height') || 0);
   if (w > 200 || h > 200) {
     img.src = BLANK_GIF;
     return;
   }
-  // 沒有屬性時，等載入後再檢查 naturalWidth/Height
   img.addEventListener('load', function check() {
     img.removeEventListener('load', check);
     if (img.naturalWidth > 200 || img.naturalHeight > 200) {
@@ -1225,9 +1088,7 @@ function blockLargeImg(img) {
 }
 
 function startImageBlocker() {
-  // 套用到目前已存在的圖片
   document.querySelectorAll('img').forEach(blockLargeImg);
-  // 監聽後續動態加入的圖片
   const imgObserver = new MutationObserver((mutations) => {
     for (const m of mutations) {
       for (const node of m.addedNodes) {
@@ -1242,15 +1103,13 @@ function startImageBlocker() {
 
 function updateOverlay(newState, message) {
   if (!overlay) return;
-  const statusEl = document.getElementById('kktix-bot-status');
+  const statusEl = document.getElementById('evt-helper-status');
   if (statusEl) statusEl.textContent = pollCount > 0 ? `[#${pollCount}] ${message}` : message;
 }
 
 function updateOverlayCountdown() {
-  const el = document.getElementById('kktix-bot-countdown');
+  const el = document.getElementById('evt-helper-countdown');
   if (!el || !settings) return;
-
-  // 只要開賣時間尚未到，無論任何狀態都顯示倒數
   if (settings.saleStartTime && state !== STATE.DONE && state !== STATE.STOPPED) {
     const diff = new Date(settings.saleStartTime).getTime() - Date.now();
     if (diff > 0) {
@@ -1277,7 +1136,6 @@ function escHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// ─── State ────────────────────────────────────────────────────────────────────
 function setState(s) {
   state = s;
 }
@@ -1293,7 +1151,6 @@ function clearTimer() {
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatCountdown(ms) {
   if (ms <= 0) return '開賣中！';
   const h = Math.floor(ms / 3600000);
@@ -1307,15 +1164,11 @@ function randomDelay(min, max) {
 }
 
 function log(...args) {
-  console.log('[KKTix Bot]', ...args);
+  console.log('[EH]', ...args);
 }
 
-// ─── Queue Status Polling ─────────────────────────────────────────────────────
-// 拿到 JWT token 後，輪詢 queue 狀態直到取得 redirect URL
 async function pollQueueStatus(slug, jwtToken, attempt = 1) {
-  if (state !== STATE.QUEUING) return;  // 只在 QUEUING 狀態繼續，其他（STOPPED/DONE）全部中止
-
-  // 正確 endpoint：GET /queue/token/{jwtToken}（JWT 在 path 中，不是 header）
+  if (state !== STATE.QUEUING) return;
   const url = `https://queue.kktix.com/queue/token/${jwtToken}`;
 
   try {
@@ -1328,61 +1181,50 @@ async function pollQueueStatus(slug, jwtToken, attempt = 1) {
         'referer': 'https://kktix.com/',
       },
     });
-
-    // redirect 代表輪到了（DevTools 顯示「無法載入回應資料」正是這個情況）
     if (resp.redirected) {
       log(`佇列完成，redirect → ${resp.url}`);
       location.href = resp.url;
-      updateOverlay(STATE.DONE, '✅ 搶票成功！請完成付款');
+      updateOverlay(STATE.DONE, '✅ 完成！請完成付款');
       setState(STATE.DONE);
-      chrome.runtime.sendMessage({ type: 'SET_STATE', state: 'done', detail: '已搶到票，請完成付款流程。' }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'SET_STATE', state: 'done', detail: '已完成，請繼續後續步驟。' }).catch(() => {});
       return;
     }
 
     const text = await resp.text();
-    log(`queue 輪詢 #${attempt} status=${resp.status}: ${text.slice(0, 200)}`);
+    log(`queue #${attempt} status=${resp.status}`);
 
     let json = null;
     try { json = JSON.parse(text); } catch (_) {}
-
-    // to_param = registration id → 跳轉到付款頁
     if (json?.to_param) {
       const dest = `https://kktix.com/events/${slug}/registrations/${json.to_param}`;
       log(`佇列完成！to_param=${json.to_param}，轉跳 → ${dest}`);
       location.href = dest;
-      updateOverlay(STATE.DONE, '✅ 搶票成功！請完成付款');
+      updateOverlay(STATE.DONE, '✅ 完成！請完成付款');
       setState(STATE.DONE);
-      chrome.runtime.sendMessage({ type: 'SET_STATE', state: 'done', detail: '已搶到票，請完成付款流程。' }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'SET_STATE', state: 'done', detail: '已完成，請繼續後續步驟。' }).catch(() => {});
       return;
     }
-
-    // 其他 redirect url 格式
     const redirectUrl = json?.redirect_url || json?.redirectUrl || json?.url ||
                         json?.redirect || json?.location || json?.next_url;
     if (redirectUrl) {
       log(`佇列完成，轉跳 → ${redirectUrl}`);
       location.href = redirectUrl;
-      updateOverlay(STATE.DONE, '✅ 搶票成功！請完成付款');
+      updateOverlay(STATE.DONE, '✅ 完成！請完成付款');
       setState(STATE.DONE);
-      chrome.runtime.sendMessage({ type: 'SET_STATE', state: 'done', detail: '已搶到票，請完成付款流程。' }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'SET_STATE', state: 'done', detail: '已完成，請繼續後續步驟。' }).catch(() => {});
       return;
     }
-
-    // not_found = token 尚未就緒，繼續等
-    // 有 to_param 以外的 key = 仍在佇列中
     const position = json?.position || json?.queue_position || json?.rank;
     const msg = position ? `佇列位置 #${position}，等待中…` : `佇列等待中（第 ${attempt} 次）…`;
     updateOverlay(STATE.FILLING, msg);
-
-    // 每 1.5 秒輪詢一次，最多 120 次（3 分鐘）
     if (attempt < 120) {
       pollTimer = setTimeout(() => pollQueueStatus(slug, jwtToken, attempt + 1), 1500);
     } else {
-      log('queue 輪詢逾時');
+      log('queue timeout');
       updateOverlay(STATE.STOPPED, '佇列等待逾時，請手動操作');
     }
   } catch (e) {
-    log('queue 輪詢失敗', e);
+    log('queue error', e);
     if (attempt < 120) {
       pollTimer = setTimeout(() => pollQueueStatus(slug, jwtToken, attempt + 1), 2000);
     }

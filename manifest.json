@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "KKTix 自動搶票",
+  "name": "Event Form Helper",
   "version": "1.0.0",
-  "description": "KKTix 智慧自動搶票擴充功能 - 靜默 fetch 輪詢、優先票種清單、自動填表",
+  "description": "活動頁面表單輔助工具",
   "permissions": [
     "storage",
     "tabs",
@@ -15,7 +15,7 @@
   ],
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "KKTix 自動搶票",
+    "default_title": "Event Form Helper",
     "default_icon": {
       "128": "icons/icon128.png"
     }

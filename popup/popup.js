@@ -203,8 +203,6 @@ function bindEvents() {
   document.getElementById('masterToggle').addEventListener('change', (e) => {
     settings.enabled = e.target.checked;
   });
-
-  // 監聽所有日期時間下拉選單
   ['dtYear', 'dtMonth', 'dtDay', 'dtHour', 'dtMinute'].forEach(id => {
     document.getElementById(id).addEventListener('change', () => {
       if (id === 'dtYear' || id === 'dtMonth') populateDays();
@@ -253,7 +251,6 @@ function addTicket() {
 }
 
 async function saveSettings() {
-  // 若輸入欄有未送出的票名，自動加入清單再儲存
   const pendingName = document.getElementById('newTicketName').value.trim();
   if (pendingName) addTicket();
 
@@ -267,7 +264,7 @@ async function saveSettings() {
 
   await chrome.storage.local.set(settings);
 
-  // Notify active KKTix tabs
+  
   const tabs = await chrome.tabs.query({ url: '*://*.kktix.com/*' });
   for (const tab of tabs) {
     chrome.tabs.sendMessage(tab.id, { type: 'SETTINGS_UPDATED', settings }).catch(() => {});
