@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "KKTix 自動搶票",
+  "version": "1.0.0",
+  "description": "KKTix 智慧自動搶票擴充功能 - 靜默 fetch 輪詢、優先票種清單、自動填表",
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting",
+    "alarms",
+    "notifications"
+  ],
+  "host_permissions": [
+    "*://*.kktix.com/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "KKTix 自動搶票",
+    "default_icon": {
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.kktix.com/events/*/registrations/new*",
+        "*://*.kktix.com/events/*/registrations/new",
+        "*://*.kktix.com/events/*/registrations/*"
+      ],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "128": "icons/icon128.png"
+  }
+}

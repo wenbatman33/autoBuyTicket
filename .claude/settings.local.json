@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Read(//Users/batman_work/.claude/skills/webapp-testing/**)",
+      "Bash(python scripts/with_server.py --help)",
+      "Bash(python3 -c \"from playwright.sync_api import sync_playwright; print\\(''ok''\\)\")",
+      "Bash(python3:*)",
+      "Bash(claude mcp:*)",
+      "WebFetch(domain:kktix.com)"
+    ]
+  }
+}
